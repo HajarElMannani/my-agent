@@ -1,7 +1,7 @@
 import { stepCountIs, streamText } from "ai";
 import { google } from "@ai-sdk/google";
 import { SYSTEM_PROMPT, COMMIT_MESSAGE_SYSTEM_PROMPT } from "./prompts";
-import { getFileChangesInDirectoryTool } from "./tools";
+import { getFileChangesInDirectoryTool, generateMarkdownFileTool, summarizeProjectTool } from "./tools";
 import { simpleGit } from "simple-git";
 
 const codeReviewAgent = async (prompt: string) => {
@@ -63,12 +63,60 @@ export const generateCommitMessage = async (rootDir: string) => {
   process.stdout.write("\n");
 };
 
-// Simple CLI: `bun run index.ts commit [rootDir]` or default to cwd for commit
-const [mode, maybeDir] = process.argv.slice(2);
+async function generateReadme(rootDir: string, overwrite: boolean = true) {
+  const prompt = `Read the repository context via summarizeProjectTool, then generate a comprehensive, skimmable README.md grounded in the files you read.
+
+Include:
+- Project overview and key features
+- Requirements and installation
+- Setup and configuration
+- Usage with examples
+- Scripts / commands
+- Contributing, License
+
+After you generate the README content, call generateMarkdownFileTool to write it with:
+- rootDir: "${rootDir}"
+- relativePath: "README.md"
+- content: your generated README (no code fences)
+- overwrite: ${overwrite}`;
+
+  const result = streamText({
+    model: google("models/gemini-2.5-flash"),
+    system: SYSTEM_PROMPT,
+    prompt,
+    tools: {
+      getFileChangesInDirectoryTool: getFileChangesInDirectoryTool,
+      summarizeProjectTool: summarizeProjectTool,
+      generateMarkdownFileTool: generateMarkdownFileTool,
+    },
+    stopWhen: stepCountIs(10),
+  });
+
+  for await (const chunk of result.textStream) {
+    process.stdout.write(chunk);
+  }
+  process.stdout.write("\n");
+}
+
+// Simple CLI:
+// - Commit message: `bun run index.ts commit [rootDir]`
+// - README generate: `bun run index.ts readme [rootDir] [--overwrite true|false]`
+const args = process.argv.slice(2);
+const mode = args[0];
 
 if (mode === "commit") {
-  const dir = maybeDir ?? process.cwd();
+  const dir = args[1] ?? process.cwd();
   await generateCommitMessage(dir);
+} else if (mode === "readme") {
+  const dir = args[1] ?? process.cwd();
+  let overwrite: boolean = true;
+  for (let i = 2; i < args.length; i++) {
+    if (args[i] === "--overwrite" && typeof args[i + 1] === "string") {
+      overwrite = args[i + 1] === "true";
+      i += 1;
+    }
+  }
+  await generateReadme(dir, overwrite);
 } else {
   // Default behavior: run the code review agent with provided directory hint
   await codeReviewAgent(
